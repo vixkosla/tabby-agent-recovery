@@ -1,0 +1,38 @@
+{
+  "name": "tabby-agent-recovery",
+  "version": "1.0.0",
+  "description": "Restore Tabby panes after restart: reattach surviving sessions, keep splits, and stop tabs from vanishing when a process exits.",
+  "keywords": [
+    "tabby-plugin",
+    "tabby",
+    "terminal",
+    "session-restore",
+    "recovery"
+  ],
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "bridge.js",
+    "README.md",
+    "LICENSE",
+    "PRIVACY.md",
+    "screenshot.png"
+  ],
+  "scripts": {
+    "test": "node --test test/bridge.test.cjs",
+    "prepublishOnly": "npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vixkosla/tabby-agent-recovery.git"
+  },
+  "homepage": "https://github.com/vixkosla/tabby-agent-recovery#readme",
+  "bugs": {
+    "url": "https://github.com/vixkosla/tabby-agent-recovery/issues"
+  },
+  "author": "Tamerlan Askerov <hello@sonicxboy.dev> (https://sonicxboy.dev)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
