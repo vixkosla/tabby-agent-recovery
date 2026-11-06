@@ -10,11 +10,12 @@ Tabby already saves the main window layout. After a reboot the old PTY is gone, 
 
 Tabby → **Settings** → **Plugins** → search **agent-recovery** → Install → restart Tabby.
 
-Or:
+Or from the plugins directory Tabby shows under Settings → Plugins:
 
 ```bash
-cd "$(tabby shows as Plugins Directory)"
 npm install tabby-agent-recovery
+# until the npm listing is live:
+# npm install github:vixkosla/tabby-agent-recovery
 ```
 
 Then restart Tabby. The package name must stay `tabby-agent-recovery` (`tabby-plugin` keyword) so the Plugin Manager lists it.
@@ -50,6 +51,15 @@ If Tabby already loads this plugin from a symlink under `~/.config/tabby/plugins
 ```bash
 npm test
 TABBY_PLUGINS="$(pwd)" tabby --debug
+```
+
+## Publish
+
+Tabby's plugin catalog is the public npm registry. There is no separate review form: a package named `tabby-*` with keyword `tabby-plugin` appears in Settings → Plugins after `npm publish`.
+
+```bash
+npm login --auth-type=web
+npm publish --access public
 ```
 
 ## License
