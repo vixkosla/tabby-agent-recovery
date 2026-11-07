@@ -3,3 +3,5 @@ npm-debug.log*
 .npmrc
 *.pending
 .DS_Store
+output/
+*.tgz

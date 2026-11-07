@@ -8,6 +8,11 @@ const { execFile } = require('child_process')
 const { promisify } = require('util')
 const run = promisify(execFile)
 const KEY = /^[a-z0-9-]{1,80}$/
+const native = require('./native')
+
+function executable (file) {
+    try { fs.accessSync(file, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK); return true } catch { return false }
+}
 
 function readJSON (file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
@@ -64,7 +69,7 @@ function tokenKey (token, statePath, launcher) {
 
 function bindToken (token, key, state, launcher) {
     key = canonical(key, state)
-    if (!key || state.entries[key].enabled === false) return token
+    if (!key || state.entries[key].enabled === false || !executable(launcher)) return token
     token.profile = { ...token.profile, behaviorOnSessionEnd: 'keep', options: {
         ...token.profile.options,
         command: launcher,
@@ -102,15 +107,16 @@ function manifest (tokens, statePath, launcher) {
 }
 
 function layoutOnly (tokens) {
-    return tokens.map(({ savedState, children, ...token }) => ({
-        ...token,
+    return tokens.map(({ savedState, children, profile, ...token }) => ({
+        ...token, ...(profile ? { profile: { ...profile, options: { ...profile.options, env: native.safeEnvironment(profile.options?.env) } } } : {}),
         ...(Array.isArray(children) ? { children: layoutOnly(children) } : {}),
     }))
 }
 
 function install ({
     core, local, ipc, storage, statePath, launcher, lookupBindings,
-    logTerminalOutput, warning = console.warn,
+    logTerminalOutput, includeScrollback = process.env.TABBY_AGENT_RECOVERY_SCROLLBACK === '1',
+    detectNative = native.createDetector(), warning = console.warn,
 } = {}) {
     statePath ||= defaultStatePath()
     launcher ||= defaultLauncher()
@@ -121,6 +127,7 @@ function install ({
     const state = () => readJSON(path.join(statePath, 'state.json'), { entries: {} })
     let cache, cachedAt = 0
     const bindings = () => {
+        if (!lookupBindings && !executable(launcher)) return Promise.resolve({})
         if (!cache || Date.now() - cachedAt > 1000) {
             cachedAt = Date.now()
             cache = (lookupBindings ? lookupBindings() : run(launcher, ['pane-bindings'], { timeout: 2500, maxBuffer: 65536 })
@@ -138,7 +145,15 @@ function install ({
             const pty = token.profile?.options?.restoreFromPTYID
             const pid = pty && ipc.sendSync('pty:get-pid', pty)
             const key = (pid && (await bindings())[String(pid)]) || tokenKey(token, statePath, launcher)
-            if (key) bindToken(token, key, state(), launcher)
+            if (key && canonical(key, state()) && executable(launcher)) bindToken(token, key, state(), launcher)
+            else native.bindNative(token, (pid && await detectNative(Number(pid))) || native.fromProfile(token))
+            if (token.profile?.behaviorOnSessionEnd === 'keep' &&
+                (native.fromProfile(token) || tokenKey(token, statePath, launcher))) {
+                // Keep the newly identified pane now, not only after its next restart.
+                const { restoreFromPTYID, ...options } = token.profile.options
+                tab.profile = { ...token.profile, options }
+                if (tab.session) tab.session.pauseAfterExit = true
+            }
         } catch {
             warning('agent-recovery: could not refresh a pane binding; preserving its profile')
         }
@@ -156,15 +171,17 @@ function install ({
                 if (!launchSnapshotSaved && Array.isArray(original) && original.length) {
                     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
                     atomicJSON(path.join(statePath, 'layout-snapshots', `${stamp}-${process.pid}.json`), {
-                        version: 1, saved_at: new Date().toISOString(), tabs: original,
+                        version: 1, saved_at: new Date().toISOString(), tabs: includeScrollback ? original : layoutOnly(original),
                     })
+                    const snapshots = path.join(statePath, 'layout-snapshots')
+                    fs.readdirSync(snapshots).filter(name => /^\d{4}-.*\.json$/.test(name)).sort().slice(0, -20).forEach(name => fs.unlinkSync(path.join(snapshots, name)))
                     launchSnapshotSaved = true
                 }
                 const tokens = migrate(original, state(), pending, statePath, launcher)
                 const after = JSON.stringify(tokens)
                 if (before !== after) {
                     const backup = path.join(statePath, 'tabby-layout-before-binding.json')
-                    if (!fs.existsSync(backup)) atomicJSON(backup, JSON.parse(before))
+                    if (!fs.existsSync(backup)) atomicJSON(backup, includeScrollback ? JSON.parse(before) : layoutOnly(JSON.parse(before)))
                     storage.tabsRecovery = after
                 }
                 atomicJSON(path.join(statePath, 'tabby-layout.json'), manifest(tokens, statePath, launcher))
@@ -183,7 +200,7 @@ function install ({
                 const tokens = JSON.parse(storage.tabsRecovery)
                 atomicJSON(path.join(statePath, 'tabby-layout.json'), manifest(tokens, statePath, launcher))
                 atomicJSON(path.join(statePath, 'tabby-latest-snapshot.json'), {
-                    version: 1, saved_at: new Date().toISOString(), tabs: tokens,
+                    version: 1, saved_at: new Date().toISOString(), tabs: includeScrollback ? tokens : layoutOnly(tokens),
                 })
             } catch {
                 warning('agent-recovery: could not checkpoint pane manifest')
@@ -221,12 +238,13 @@ function install ({
     terminal.ngOnInit = function (...args) {
         const token = { type: 'app:local-tab', profile: this.profile }
         const key = tokenKey(token, statePath, launcher)
-        if (key && state().entries[key]?.enabled !== false) {
+        const bound = (key && state().entries[key]?.enabled !== false) || native.fromProfile(token)
+        if (bound) {
             this.profile.behaviorOnSessionEnd = 'keep'
             this.profile.options.pauseAfterExit = true
         }
         onInit.apply(this, args)
-        if (!key || this.session || state().entries[key]?.enabled === false) return
+        if (!bound || this.session) return
         const initialize = this.initializeSession
         initialize.call(this, this.size?.columns || 80, this.size?.rows || 24)
         const started = this.session
@@ -243,5 +261,5 @@ function install ({
 
 module.exports = {
     install, canonical, tokenKey, bindToken, walk, migrate, manifest, layoutOnly,
-    defaultLauncher, defaultStatePath,
+    defaultLauncher, defaultStatePath, executable,
 }

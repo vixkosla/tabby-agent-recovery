@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const bridge = require('../bridge')
-const launcher = '/example/agent-sessions'
+const launcher = process.execPath
 const statePath = '/example/state'
 const state = { entries: { old: { redirect_to: 'pane' }, pane: { enabled: true } } }
 const shell = (pty = 'pty-1') => ({ type: 'app:local-tab', tabTitle: 'Original',
@@ -113,7 +113,7 @@ test('pending migration executes before Tabby constructs recovered tabs', async 
 })
 
 test('launch snapshot survives later autosaves and preserves terminal scrollback privately', async t => {
-    const { Recovery, root, storage } = fixture(t)
+    const { Recovery, root, storage } = fixture(t, { includeScrollback: true })
     const token = shell('target')
     token.savedState = 'private terminal scrollback'
     storage.tabsRecovery = JSON.stringify([{ type: 'app:split-tab', savedState: 'nested scrollback',
@@ -177,4 +177,73 @@ test('terminal output is recorded privately without recording keyboard input', a
     assert.equal(fs.readFileSync(log, 'utf8'), 'terminal output\n')
     assert.equal(fs.statSync(log).mode & 0o777, 0o600)
     assert.equal(unsubscribed, true)
+})
+
+test('a missing launcher never replaces a working legacy reconnect script', () => {
+    const token = shell()
+    token.profile.options.args = ['--login', `${statePath}/reconnect/pane.sh`]
+    const before = structuredClone(token)
+    bridge.migrate([token], state, {}, statePath, '/not-installed/agent-sessions')
+    assert.deepEqual(token, before)
+})
+
+test('native recovery works in a clean installation with no external state or launcher', async t => {
+    const id = '11111111-1111-4111-8111-111111111111'
+    const { Recovery, storage, root, Terminal } = fixture(t, {
+        launcher: '/not-installed/agent-sessions', lookupBindings: undefined,
+        detectNative: async pid => { assert.equal(pid, 42); return { id, kind: 'codex', command: '/usr/bin/codex', args: ['resume', id], cwd: '/work', env: {} } },
+    })
+    fs.unlinkSync(path.join(root, 'state.json'))
+    await new Recovery().saveTabs([{ token: shell() }])
+    const saved = JSON.parse(storage.tabsRecovery)[0]
+    assert.equal(saved.profile.options.command, '/usr/bin/codex')
+    assert.deepEqual(saved.profile.options.args, ['resume', id])
+    const tab = new Terminal()
+    tab.profile = saved.profile
+    tab.ngOnInit()
+    assert.equal(tab.starts, 1)
+    tab.initializeSession(90, 20)
+    assert.equal(tab.starts, 1)
+})
+
+test('default snapshots omit scrollback and credential environment, including nested panes', async t => {
+    const { Recovery, root, storage } = fixture(t)
+    const token = shell()
+    token.savedState = 'secret output'
+    token.profile.options.env = { API_KEY: 'secret-key', CODEX_HOME: '/config' }
+    storage.tabsRecovery = JSON.stringify([{ type: 'app:split-tab', savedState: 'parent output', children: [token] }])
+    const recovery = new Recovery()
+    await recovery.recoverTabs()
+    await recovery.saveTabs([{ token }])
+    for (const file of [path.join(root, 'tabby-latest-snapshot.json'), ...fs.readdirSync(path.join(root, 'layout-snapshots')).map(f => path.join(root, 'layout-snapshots', f))]) {
+        const data = fs.readFileSync(file, 'utf8')
+        assert.equal(data.includes('secret'), false)
+        assert.equal(data.includes('savedState'), false)
+        assert.equal(data.includes('/config'), true)
+    }
+    assert.equal(JSON.parse(storage.tabsRecovery)[0].savedState, 'secret output')
+})
+
+test('launch snapshots are bounded to twenty files and unrelated files survive pruning', async t => {
+    const { Recovery, root, storage } = fixture(t)
+    const dir = path.join(root, 'layout-snapshots')
+    fs.mkdirSync(dir)
+    for (let i = 0; i < 25; i++) fs.writeFileSync(path.join(dir, `2020-01-${String(i + 1).padStart(2, '0')}.json`), '{}')
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'keep')
+    storage.tabsRecovery = JSON.stringify([shell()])
+    await new Recovery().recoverTabs()
+    assert.equal(fs.readdirSync(dir).filter(f => f.endsWith('.json')).length, 20)
+    assert.equal(fs.readFileSync(path.join(dir, 'notes.txt'), 'utf8'), 'keep')
+})
+
+test('newly detected panes keep their recovery command even if the process later exits', async t => {
+    const id = '11111111-1111-4111-8111-111111111111'
+    const { Recovery } = fixture(t, { launcher: '/missing', lookupBindings: undefined,
+        detectNative: async () => ({ id, command: '/usr/bin/codex', args: ['resume', id], env: {} }) })
+    const tab = { token: shell(), profile: shell().profile, session: { pauseAfterExit: false } }
+    await new Recovery().getFullRecoveryToken(tab)
+    assert.equal(tab.profile.behaviorOnSessionEnd, 'keep')
+    assert.deepEqual(tab.profile.options.args, ['resume', id])
+    assert.equal(tab.session.pauseAfterExit, true)
+    assert.equal(tab.profile.options.restoreFromPTYID, undefined)
 })

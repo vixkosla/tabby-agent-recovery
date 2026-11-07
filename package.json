@@ -1,7 +1,7 @@
 {
   "name": "tabby-agent-recovery",
-  "version": "1.0.0",
-  "description": "Restore Tabby panes after restart: reattach surviving sessions, keep splits, and stop tabs from vanishing when a process exits.",
+  "version": "1.1.0",
+  "description": "Resume exact Codex and Claude Code conversations in Tabby after restart. Keep splits and finished panes; no separate launcher required.",
   "keywords": [
     "tabby-plugin",
     "tabby",
@@ -13,13 +13,14 @@
   "files": [
     "index.js",
     "bridge.js",
+    "native.js",
     "README.md",
     "LICENSE",
     "PRIVACY.md",
-    "screenshot.png"
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test test/bridge.test.cjs",
+    "test": "node --test test/*.test.cjs",
     "prepublishOnly": "npm test"
   },
   "repository": {
